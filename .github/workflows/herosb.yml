@@ -1,0 +1,38 @@
+name: herosb
+
+# libherosb.dylib alone, without a Mesa build: herosb.c needs only system
+# frameworks and herodrm_log, so a one-symbol libdrm stand-in satisfies the
+# linker and the real lib/libdrm.2.dylib of the drop zone provides it at run time.
+on:
+  push:
+    branches: [herolte]
+    paths:
+      - "gpu/eagl/src/herosb.c"
+      - ".github/workflows/herosb.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          set -euo pipefail
+          sdk=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot $sdk"
+          mkdir -p out/lib
+          printf '#include <stdarg.h>\nvoid herodrm_log(const char *f, ...) { (void)f; }\n' > stub_drm.c
+          $CC -dynamiclib -o out/lib/libdrm.2.dylib stub_drm.c -install_name @rpath/libdrm.2.dylib
+          $CC -O2 -Wall -dynamiclib -o out/libherosb.dylib gpu/eagl/src/herosb.c \
+            -install_name @rpath/libherosb.dylib \
+            -framework CoreFoundation -lobjc -L out/lib -ldrm.2 \
+            -Wl,-rpath,/private/var/herolte/lib
+          codesign -s - -f out/libherosb.dylib
+          otool -L out/libherosb.dylib
+          shasum -a 256 out/libherosb.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herosb
+          path: out/libherosb.dylib

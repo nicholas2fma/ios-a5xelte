@@ -131,6 +131,10 @@ set_provider(id self, SEL cmd, Class provider)
 static void
 keep_status_bar(void)
 {
+   static bool done;
+   if (done)
+      return;
+   done = true;
    static const char *const providers[] = { "_UIStatusBarVisualProvider_iOS", "_UIStatusBarVisualProvider_Phone",
       "_UIStatusBarVisualProvider_Fallback" };
    SEL pick = sel_registerName("visualProviderSubclassForScreen:visualProviderInfo:");
@@ -153,7 +157,6 @@ keep_status_bar(void)
 static void
 ask_for_gestures(void)
 {
-   keep_status_bar();
    Class platform = objc_getClass("BSPlatform");
    Method type = platform ? class_getInstanceMethod(platform, sel_registerName("homeButtonType")) : NULL;
    if (type) {
@@ -169,6 +172,13 @@ ask_for_gestures(void)
 __attribute__((constructor)) static void
 herosb_start(void)
 {
+   /*
+    * Galaxy S7 port: the status bar does not depend on the gestures. With gestures.off (the physical home
+    * button, home-button-type 1) UIKit in SpringBoard still ends on the rdar:45025538 fallback provider for
+    * this 750x1334 screen, so the bar has to be kept either way; keeping it inside ask_for_gestures() meant
+    * gestures.off silently turned the status bar off too (herosb: status bar hooks 0 asked 0 replaced 0).
+    */
+   keep_status_bar();
    if (access(DROP_DIR "gestures.off", F_OK) != 0)
       ask_for_gestures();
    if (access(DROP_DIR "wallpaper.off", F_OK) == 0)
