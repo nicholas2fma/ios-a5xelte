@@ -1,0 +1,108 @@
+diff --git a/bsd/dev/herolte_gl.c b/bsd/dev/herolte_gl.c
+index c743b77..a0f0dac 100644
+--- a/bsd/dev/herolte_gl.c
++++ b/bsd/dev/herolte_gl.c
+@@ -29,6 +29,8 @@ uint64_t herolte_gl_dyld_flags(void);
+ #define HGL_MAX_LAUNCHES 2
+ #define HGL_SB_TARGET   "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
+ #define HGL_SB_LIB      "/private/var/herolte/lib/libherosb.dylib"
++#define HGL_DIAG_BB     "/private/var/tmp/herodyld-backboardd.log"
++#define HGL_DIAG_SB     "/private/var/tmp/herodyld-springboard.log"
+ 
+ /*
+  * dyld only honours DYLD_* variables when AMFI allows them
+@@ -42,8 +44,38 @@ uint64_t herolte_gl_dyld_flags(void);
+  */
+ #define AMFI_DYLD_OUTPUT_ALLOW_AT_PATH                  (1ull << 0)
+ #define AMFI_DYLD_OUTPUT_ALLOW_PATH_VARS                (1ull << 1)
++#define AMFI_DYLD_OUTPUT_ALLOW_CUSTOM_SHARED_CACHE      (1ull << 2)
++#define AMFI_DYLD_OUTPUT_ALLOW_PRINT_VARS               (1ull << 4)
+ #define AMFI_DYLD_OUTPUT_ALLOW_FAILED_LIBRARY_INSERTION (1ull << 5)
+ 
++/*
++ * boot-arg herogl_diag: why an insertion failed. A failed DYLD_INSERT_LIBRARIES
++ * is silent by design here: dyld4 only logs "terminating because inserted dylib
++ * ... could not be loaded: <reason>" when ALLOW_FAILED_LIBRARY_INSERTION is off
++ * (RuntimeState::loadInsertedLibraries), and it only honours DYLD_PRINT_TO_FILE
++ * with both ALLOW_PRINT_VARS and ALLOW_CUSTOM_SHARED_CACHE (ProcessConfig's
++ * Logging). With the shim inserted but never mapped in backboardd (its env had
++ * the variable and the policy answered 0x23, yet proc_regionfilename found no
++ * herolte mapping), the reason is the only thing still missing.
++ *
++ *   herogl_diag=1  the reason, and the daemon dies: two launches, then stock
++ *   herogl_diag=2  the search log only, failures stay survivable
++ *
++ * The log goes to /private/var/tmp (01777): backboardd and SpringBoard run as
++ * mobile and cannot create files in the root-owned drop zone.
++ */
++static int hgl_diag = -1;
++
++static int
++herolte_gl_diag(void)
++{
++	if (hgl_diag < 0) {
++		hgl_diag = 0;
++		PE_parse_boot_argn("herogl_diag", &hgl_diag, sizeof(hgl_diag));
++	}
++	return hgl_diag;
++}
++
+ static int hgl_mode = -1;
+ static int hgl_launches;
+ static int hgl_pid = -1;        /* the backboardd that got the shim */
+@@ -56,8 +88,14 @@ herolte_gl_dyld_flags(void)
+ 	if ((hgl_pid < 0 || proc_selfpid() != hgl_pid) && (hgl_sb_pid < 0 || proc_selfpid() != hgl_sb_pid)) {
+ 		return 0;
+ 	}
+-	return AMFI_DYLD_OUTPUT_ALLOW_AT_PATH | AMFI_DYLD_OUTPUT_ALLOW_PATH_VARS |
+-	       AMFI_DYLD_OUTPUT_ALLOW_FAILED_LIBRARY_INSERTION;
++	uint64_t flags = AMFI_DYLD_OUTPUT_ALLOW_AT_PATH | AMFI_DYLD_OUTPUT_ALLOW_PATH_VARS;
++	if (herolte_gl_diag() != 0) {
++		flags |= AMFI_DYLD_OUTPUT_ALLOW_PRINT_VARS | AMFI_DYLD_OUTPUT_ALLOW_CUSTOM_SHARED_CACHE;
++	}
++	if (herolte_gl_diag() != 1) {
++		flags |= AMFI_DYLD_OUTPUT_ALLOW_FAILED_LIBRARY_INSERTION;
++	}
++	return flags;
+ }
+ 
+ /*
+@@ -125,9 +163,15 @@ herolte_gl_env(const char *path, int pid, const char **extra, int max)
+ 			vnode_put(sbvp);
+ 			hgl_sb_launches++;
+ 			hgl_sb_pid = pid;
+-			extra[0] = "DYLD_INSERT_LIBRARIES=" HGL_SB_LIB;
+-			printf("HEROLTE GL: SpringBoard launch %d (pid %d): libherosb inserted\n", hgl_sb_launches, pid);
+-			return 1;
++			int sbn = 0;
++			extra[sbn++] = "DYLD_INSERT_LIBRARIES=" HGL_SB_LIB;
++			if (herolte_gl_diag() != 0 && sbn + 1 < max) {
++				extra[sbn++] = "DYLD_PRINT_TO_FILE=" HGL_DIAG_SB;
++				extra[sbn++] = "DYLD_PRINT_SEARCHING=1";
++			}
++			printf("HEROLTE GL: SpringBoard launch %d (pid %d): libherosb inserted%s\n",
++			    hgl_sb_launches, pid, herolte_gl_diag() ? " (diag)" : "");
++			return sbn;
+ 		}
+ 	}
+ 	if (hgl_mode == 0 || path == NULL || strcmp(path, HGL_TARGET) != 0 || max < 3) {
+@@ -148,12 +192,16 @@ herolte_gl_env(const char *path, int pid, const char **extra, int max)
+ 	int n = 0;
+ 	extra[n++] = "DYLD_INSERT_LIBRARIES=" HGL_SHIM;
+ 	extra[n++] = "HERO_LOG_STDERR=1";
+-	if (hgl_mode >= 2) {
++	if (herolte_gl_diag() != 0 && n + 1 < max) {
++		extra[n++] = "DYLD_PRINT_TO_FILE=" HGL_DIAG_BB;
++		extra[n++] = "DYLD_PRINT_SEARCHING=1";
++	}
++	if (hgl_mode >= 2 && n < max) {
+ 		extra[n++] = "EAGL_SHIM_DEBUG=1";
+ 	}
+ 	hgl_pid = pid;
+-	printf("HEROLTE GL: backboardd launch %d (pid %d): EAGL shim inserted (herogl=%d)\n",
+-	    launch, hgl_pid, hgl_mode);
++	printf("HEROLTE GL: backboardd launch %d (pid %d): EAGL shim inserted (herogl=%d, diag=%d)\n",
++	    launch, hgl_pid, hgl_mode, herolte_gl_diag());
+ 	return n;
+ }
+ #endif /* ARM64_BOARD_CONFIG_HEROLTE */
