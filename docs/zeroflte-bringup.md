@@ -10,7 +10,7 @@ initrd 0x43000000, FDT 0x4a000000, MIDR 0x410fd032 (Cortex-A53 r0p2), MPIDR
 text and PMU reset to recovery both work.
 
 Patch 0300 turns off everything that programs Exynos 8890 hardware: keys, touch,
-fuel gauge, HeroGPU, clocks and PMIC writes (never pass heroaudio or heroaudio-related args) (the S6 has an S2MPS15, not an
-S2MPS16). It also applies the Cortex-A53 r0p2 clean-cache errata workaround.
+fuel gauge, HeroGPU, clocks and PMIC writes (the S6 has an S2MPS15, not an
+S2MPS16). Never pass the `heroaudio` boot-arg. It also applies the Cortex-A53 r0p2 clean-cache errata workaround.
 
 XNU trials write only BOOT. Never write EFS, RECOVERY or bootloader partitions.

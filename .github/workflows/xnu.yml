@@ -19,7 +19,7 @@ on:
         description: GitHub runner image (empty = both macos-14 and macos-15-intel)
         default: ""
   push:
-    branches: [main, herolte, codex/a5xelte-bringup]
+    branches: [main, herolte, zeroflte, codex/a5xelte-bringup]
     paths:
       - "xnu/patches/**"
       - ".github/workflows/xnu.yml"
@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(inputs.runner && format('["{0}"]', inputs.runner) || '["macos-14","macos-15-intel"]') }}
+        runner: ${{ fromJSON(inputs.runner && format('["{0}"]', inputs.runner) || '["macos-15-intel"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
