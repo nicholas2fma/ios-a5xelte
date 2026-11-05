@@ -1,0 +1,176 @@
+diff --git a/bsd/dev/herolte_gpu.c b/bsd/dev/herolte_gpu.c
+index 8a3fb45..d6acd7c 100644
+--- a/bsd/dev/herolte_gpu.c
++++ b/bsd/dev/herolte_gpu.c
+@@ -2542,7 +2542,12 @@ herolte_gpu_probe(void)
+ 	    kernel_thread_start(hg_audio_thread, (void *)(uintptr_t)audio, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++#if defined(ARM64_BOARD_CONFIG_ZEROFLTE)
++	/* Only herotwrp above runs: hg_thread programs Exynos 8890 clocks and PMIC. */
++	enabled = 0;
++#else
+ 	PE_parse_boot_argn("herogpu", &enabled, sizeof(enabled));
++#endif
+ 	if (!enabled) {
+ 		printf("HEROLTE GPU: probe disabled\n");
+ 		return;
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index 37b738a..dee732d 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1109,7 +1109,9 @@ bsdinit_task(void)
+ 
+ #if defined(ARM64_BOARD_CONFIG_HEROLTE)
+ 	/* Files from the USERDATA drop zone, before launchd (bsd/dev/herolte_drop.c). */
++#if !defined(ARM64_BOARD_CONFIG_ZEROFLTE)
+ 	herolte_drop_apply();
++#endif
+ #endif
+ 	load_init_program(p);
+ 	lock_trace = 1;
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 6d8a0fd..112398c 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -302,7 +302,11 @@ SweetBattery::start(IOService *provider)
+ 	}
+ #if defined(ARM64_BOARD_CONFIG_HEROLTE)
+ 	/* Default on; herofg=0 keeps the static fallback. */
++#if defined(ARM64_BOARD_CONFIG_ZEROFLTE)
++	fReal = false;  /* the MAX77854 fuel gauge is the S7's: static values */
++#else
+ 	fReal = herolte_fg_init() == 0;
++#endif
+ #else
+ 	int real = 0;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index b269868..a47714a 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -25,8 +25,12 @@ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
+ extern "C" processor_t thread_bind(processor_t processor);
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ /* Free page in the first DRAM bank, below the loader log page 0x8ffff000. */
++#if defined(ARM64_BOARD_CONFIG_ZEROFLTE)
++#define HEROLTE_SMP_TRAMPOLINE_PA 0x4fffe000u
++#else
+ #define HEROLTE_SMP_TRAMPOLINE_PA 0x8fffe000u
+ #endif
++#endif
+ #if defined(A5XELTE)
+ extern "C" void a5xelte_send_self_ipi(void);
+ extern "C" void a5xelte_send_ipi(unsigned int logical);
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index c1b8a32..403b3ef 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -813,7 +813,11 @@ AppleCLCD::gpuPresent(SweetSurface *s, int32_t sx, int32_t sy, int32_t w, int32_
+ 	uintptr_t start = s->kernelAddress() + (uintptr_t)off;
+ 	uintptr_t end = start + (uintptr_t)(h - 1) * s->bytesPerRow + (uintptr_t)w * 4;
+ 	for (uintptr_t p = start & ~(uintptr_t)63; p < end; p += 64) {
++#if defined(ARM64_BOARD_CONFIG_ZEROFLTE)
++		__asm__ volatile ("dc civac, %0" : : "r" (p) : "memory");
++#else
+ 		__asm__ volatile ("dc cvac, %0" : : "r" (p) : "memory");
++#endif
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	if (!herolte_gpu_present_draw(slot, (uint32_t)off, s->bytesPerRow, (uint32_t)w, (uint32_t)h)) {
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index d1099ff..6735b7b 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -96,7 +96,7 @@ const char * gIOKernelConfigTables =
+     "     'IOMatchCategory' = SweetBattery;"
+     "   },"
+ #endif
+-#if defined(ARM64_BOARD_CONFIG_HEROLTE)
++#if defined(ARM64_BOARD_CONFIG_HEROLTE) && !defined(ARM64_BOARD_CONFIG_ZEROFLTE)
+     "   {"
+     "     'IOClass'         = HeroGPU;"
+     "     'IOProviderClass' = IOResources;"
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index 10449ab..1c539df 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -773,11 +773,19 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ 	/* GPIO keys: Exynos 7580 or, on HEROLTE, the Exynos 8890 ALIVE pins. */
++#if defined(ARM64_BOARD_CONFIG_ZEROFLTE)
++	/* These drivers program Exynos 8890 GPIO, I2C, clocks and an S2MPS16 PMIC.
++	 * The S6 has an S2MPS15 and other pins: none of them may run here. */
++	IOLog("ZEROFLTE: S7 keys, touch, fuel gauge, GPU and PMIC code are off\n");
++#else
+ 	a5xelte_keys_init();
++#endif
+ #if defined(ARM64_BOARD_CONFIG_HEROLTE)
++#if !defined(ARM64_BOARD_CONFIG_ZEROFLTE)
+ 	/* sec_ts on the Exynos 8890 HSI2C (bsd/dev/herolte_touch.c). */
+ 	extern void herolte_touch_probe(void);
+ 	herolte_touch_probe();
++#endif
+ 	/* Mali-T880 read-only probe (bsd/dev/herolte_gpu.c). */
+ 	extern void herolte_gpu_probe(void);
+ 	herolte_gpu_probe();
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index 6d0b107..2f64d8c 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -64,7 +64,8 @@ MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
+ MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8.2-a+crypto
+ MACHINE_FLAGS_ARM64_A5XELTE = -DARM64_BOARD_CONFIG_A5XELTE            -mcpu=cortex-a53 -march=armv8-a+crypto
+ # Galaxy S7 (Exynos 8890) boots on a Cortex-A53 and reuses the A5XELTE port.
+-MACHINE_FLAGS_ARM64_HEROLTE = -DARM64_BOARD_CONFIG_A5XELTE -DARM64_BOARD_CONFIG_HEROLTE -mcpu=cortex-a53 -march=armv8-a+crypto
++# This tree builds the Galaxy S6 SM-G920F (Exynos 7420) under the HEROLTE config.
++MACHINE_FLAGS_ARM64_HEROLTE = -DARM64_BOARD_CONFIG_A5XELTE -DARM64_BOARD_CONFIG_HEROLTE -DARM64_BOARD_CONFIG_ZEROFLTE -mcpu=cortex-a53 -march=armv8-a+crypto
+ 
+ 
+ #
+diff --git a/osfmk/arm64/caches_asm.s b/osfmk/arm64/caches_asm.s
+index e777b77..efb57f6 100644
+--- a/osfmk/arm64/caches_asm.s
++++ b/osfmk/arm64/caches_asm.s
+@@ -262,7 +262,11 @@ LEXT(CleanPoU_DcacheRegion)
+ 	lsr		x4, x4, #MMU_CLINE					// Set cache line counter
+ 	dmb		sy
+ L_cpudr_loop:
++#if defined(ARM64_BOARD_CONFIG_ZEROFLTE)
++	dc		civac, x3							// A53 r0p2 errata 826319, 827319, 824069
++#else
+ 	dc		cvau, x3							// Clean dcache line to PoU 
++#endif
+ 	add		x3, x3, #(1<<MMU_CLINE)				// Get next cache aligned addr
+ 	subs	x4, x4, #1							// Decrementer cache line counter
+ 	b.pl	L_cpudr_loop						// Loop in counter not null
+@@ -293,7 +297,11 @@ L_cpcdr_loop:
+ 	// Apple hardware.
+ 	dc		civac, x0							// Clean & Invalidate dcache line to PoC
+ #else /* defined(APPLE_ARM64_ARCH_FAMILY) */
++#if defined(ARM64_BOARD_CONFIG_ZEROFLTE)
++	dc		civac, x0							// A53 r0p2 errata 826319, 827319, 824069
++#else
+ 	dc		cvac, x0 							// Clean dcache line to PoC
++#endif
+ #endif /* defined(APPLE_ARM64_ARCH_FAMILY) */
+ 	add		x0, x0, #(1<<CLINE_FLUSH_STRIDE)	// Get next cache aligned addr
+ 	subs	x1, x1, #1							// Decrementer cache line counter
+diff --git a/pexpert/pexpert/arm64/A5XELTE.h b/pexpert/pexpert/arm64/A5XELTE.h
+index 8f9c8a2..0f16bf6 100644
+--- a/pexpert/pexpert/arm64/A5XELTE.h
++++ b/pexpert/pexpert/arm64/A5XELTE.h
+@@ -23,7 +23,12 @@
+ #define A5XELTE_FB_BLOCKS             8     /* 2 MiB VA=PA bootstrap blocks */
+ #define A5XELTE_FB_TEXT_SCALE         3
+ #define A5XELTE_FB_DOT_PITCH          458   /* iPhone X userland density */
++#if defined(ARM64_BOARD_CONFIG_ZEROFLTE)
++/* Galaxy S6: free RAM below the XNU window at 0x50000000 (shim/zeroflte). */
++#define A5XELTE_MARKER_PA             0x4ffff100
++#else
+ #define A5XELTE_MARKER_PA             0x8ffff100
++#endif
+ /* S-Boot starts on the Cortex-A53 "Apollo" cluster, Aff1 = 1. */
+ #define A5XELTE_BOOT_MPIDR            0x100
+ #else
